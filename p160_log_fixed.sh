@@ -1,5 +1,5 @@
 #!/bin/bash
-# P160 Parallel Search with improved log-based status
+# P160 Parallel Search with improved log-based status and advanced strategies
 
 # Default parameters
 DURATION=12  # hours to run
@@ -18,117 +18,54 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Use absolute paths
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+# Set up paths
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+LOG_FILE="$SCRIPT_DIR/p160_status.log"
 
-# Prepare log file
-LOG_FILE="p160_status.log"
-echo "P160 Search started at $(date)" > $LOG_FILE
-echo "Running for $DURATION hours" >> $LOG_FILE
-echo "----------------------------------------" >> $LOG_FILE
+# Initialize log file
+echo "[$(date +%Y-%m-%d\ %H:%M:%S)] Starting P160 search ($DURATION hours)" > $LOG_FILE
 
-# Create directories for each strategy
-mkdir -p strategy1 strategy2 strategy3 strategy4
-
-# Copy necessary files and compile
-for dir in strategy1 strategy2 strategy3 strategy4; do
-    cp p160_simple.cu Makefile.simple $dir/ 2>/dev/null
-    (cd $dir && make -f Makefile.simple >/dev/null 2>&1)
-done
-
-# Track the last logged match to avoid duplicate entries
-LAST_LOGGED_MATCH=""
-LAST_LOGGED_INPUT=""
-LAST_LOGGED_HASH=""
-
-# Function to log status update with change detection
-log_status() {
-    # Get best match info directly from each strategy directory
-    BEST_MATCH=0
-    BEST_DIR=""
-    MATCH=""
-    INPUT=""
-    HASH=""
-    
-    for dir in strategy1 strategy2 strategy3 strategy4; do
-        if [ -f "$dir/best_match.txt" ]; then
-            DIR_MATCH=$(grep "Match percent:" "$dir/best_match.txt" 2>/dev/null | awk '{print $3}' | tr -d '%')
-            if [[ "$DIR_MATCH" =~ ^[0-9]+$ ]] && [ "$DIR_MATCH" -gt "$BEST_MATCH" ]; then
-                BEST_MATCH=$DIR_MATCH
-                BEST_DIR=$dir
-                MATCH=$(grep "Match percent:" "$dir/best_match.txt" 2>/dev/null | awk '{print $3}')
-                INPUT=$(grep "Input:" "$dir/best_match.txt" 2>/dev/null | awk '{print $2}')
-                HASH=$(grep "Hash:" "$dir/best_match.txt" 2>/dev/null | awk '{print $2}')
-            fi
-        fi
-    done
-    
-    # Check if values have changed before logging
-    if [ "$MATCH" != "$LAST_LOGGED_MATCH" ] || [ "$INPUT" != "$LAST_LOGGED_INPUT" ] || [ "$HASH" != "$LAST_LOGGED_HASH" ]; then
-        echo "[$(date +%H:%M:%S)] Status update:" >> $LOG_FILE
-        echo "  - Running time: $(printf "%02d:%02d:%02d" $HOURS $MINUTES $SECONDS) / $(printf "%02d:00:00" $DURATION)" >> $LOG_FILE
-        echo "  - Active processes: $ACTIVE_COUNT/4" >> $LOG_FILE
-        
-        if [ -n "$MATCH" ]; then
-            echo "  - Best match: $MATCH (found in $BEST_DIR)" >> $LOG_FILE
-            echo "  - Input: $INPUT" >> $LOG_FILE
-            echo "  - Hash: $HASH" >> $LOG_FILE
-            
-            # Update the tracking variables
-            LAST_LOGGED_MATCH="$MATCH"
-            LAST_LOGGED_INPUT="$INPUT"
-            LAST_LOGGED_HASH="$HASH"
-            
-            # If this is a better match, also copy it to the main directory
-            cp "$BEST_DIR/best_match.txt" ./ 2>/dev/null
-        else
-            echo "  - No matches found yet" >> $LOG_FILE
-        fi
-        
-        echo "----------------------------------------" >> $LOG_FILE
-    else
-        # Just log a brief status without the unchanged match details
-        echo "[$(date +%H:%M:%S)] Running: $(printf "%02d:%02d:%02d" $HOURS $MINUTES $SECONDS) | Processes: $ACTIVE_COUNT/4" >> $LOG_FILE
-    fi
-}
-
-# Function to check if processes are running
+# Function to check if processes are still running
 check_processes() {
     ACTIVE_COUNT=0
-    for pid in $PID1 $PID2 $PID3 $PID4; do
-        if [ ! -z "$pid" ] && kill -0 $pid 2>/dev/null; then
+    for PID in $PID1 $PID2 $PID3 $PID4; do
+        if ps -p $PID > /dev/null; then
             ACTIVE_COUNT=$((ACTIVE_COUNT + 1))
         fi
     done
 }
 
-# Function to find and share best match directly from files
+# Function to log status
+log_status() {
+    # Get status from each process
+    check_processes
+    echo "[$(date +%H:%M:%S)] Running: $(printf "%02d:%02d:%02d" $HOURS $MINUTES $SECONDS) | Processes: $ACTIVE_COUNT/4" >> $LOG_FILE
+}
+
+# Function to find and share the best match between all strategies
 share_best_match() {
     BEST_MATCH=0
     BEST_DIR=""
     
-    for dir in strategy1 strategy2 strategy3 strategy4; do
-        if [ -f "$dir/best_match.txt" ]; then
-            DIR_MATCH=$(grep "Match percent:" "$dir/best_match.txt" 2>/dev/null | awk '{print $3}' | tr -d '%')
-            if [[ "$DIR_MATCH" =~ ^[0-9]+$ ]] && [ "$DIR_MATCH" -gt "$BEST_MATCH" ]; then
-                BEST_MATCH=$DIR_MATCH
-                BEST_DIR=$dir
+    # Find the best match across all strategies
+    for DIR in strategy1 strategy2 strategy3 strategy4; do
+        if [ -f "$DIR/best_match.txt" ]; then
+            MATCH=$(grep "Match percent:" "$DIR/best_match.txt" 2>/dev/null | awk '{print $3}' | tr -d '%')
+            if [[ "$MATCH" =~ ^[0-9]+$ ]] && [ "$MATCH" -gt "$BEST_MATCH" ]; then
+                BEST_MATCH=$MATCH
+                BEST_DIR=$DIR
             fi
         fi
     done
     
-    if [ ! -z "$BEST_DIR" ]; then
-        # Copy to all strategy directories
-        for dir in strategy1 strategy2 strategy3 strategy4; do
-            if [ "$dir" != "$BEST_DIR" ]; then
-                cp "$BEST_DIR/best_match.txt" "$dir/best_match.txt.new" 2>/dev/null
-                mv "$dir/best_match.txt.new" "$dir/best_match.txt" 2>/dev/null
-            fi
-        done
+    # If we found a best match, copy it to all other directories
+    if [ -n "$BEST_DIR" ] && [ -f "$BEST_DIR/best_match.txt" ]; then
+        # Store the last logged match to check if this is a new one
+        LAST_LOGGED_MATCH=$(grep "Match percent:" best_match.txt 2>/dev/null | awk '{print $3}' | tr -d '%')
+        LAST_LOGGED_INPUT=$(grep "Input:" best_match.txt 2>/dev/null | awk '{print $2}')
         
-        # Copy to main directory for logging
-        cp "$BEST_DIR/best_match.txt" ./best_match.txt.new 2>/dev/null
+        # Copy best match to root directory
+        cp "$BEST_DIR/best_match.txt" ./best_match.txt.new
         mv ./best_match.txt.new ./best_match.txt 2>/dev/null
         
         # If this is a new best match, log it specifically
@@ -165,8 +102,8 @@ START_TIME=$(date +%s)
 cd strategy1
 (
     while [ $(date +%s) -lt $END_TIME ]; do
-        # Run with output redirected to separate log
-        ./p160_simple --attempts 5000000 --batches 20 --random --load > s1_output.log 2>&1
+        # Strategy 1: All advanced features
+        ./p160_simple --attempts 5000000 --batches 20 --guided-search --pattern-learning --adaptive-mutation --load > s1_output.log 2>&1
         sleep 1
     done
 ) > /dev/null 2>&1 &
@@ -176,8 +113,8 @@ cd "$SCRIPT_DIR"
 cd strategy2
 (
     while [ $(date +%s) -lt $END_TIME ]; do
-        # Run with output redirected to separate log
-        ./p160_simple --attempts 10000000 --batches 20 --load > s2_output.log 2>&1
+        # Strategy 2: Guided search + adaptive mutation
+        ./p160_simple --attempts 10000000 --batches 20 --guided-search --adaptive-mutation --load > s2_output.log 2>&1
         sleep 1
     done
 ) > /dev/null 2>&1 &
@@ -187,8 +124,8 @@ cd "$SCRIPT_DIR"
 cd strategy3
 (
     while [ $(date +%s) -lt $END_TIME ]; do
-        # Run with output redirected to separate log
-        ./p160_simple --attempts 12500000 --batches 10 --load > s3_output.log 2>&1
+        # Strategy 3: Pattern learning
+        ./p160_simple --attempts 12500000 --batches 10 --pattern-learning --load > s3_output.log 2>&1
         sleep 1
     done
 ) > /dev/null 2>&1 &
@@ -198,8 +135,8 @@ cd "$SCRIPT_DIR"
 cd strategy4
 (
     while [ $(date +%s) -lt $END_TIME ]; do
-        # Run with output redirected to separate log
-        ./p160_simple --attempts 10000000 --batches 10 --random --load > s4_output.log 2>&1
+        # Strategy 4: Adaptive mutation + random
+        ./p160_simple --attempts 10000000 --batches 10 --adaptive-mutation --random --load > s4_output.log 2>&1
         sleep 1
     done
 ) > /dev/null 2>&1 &
