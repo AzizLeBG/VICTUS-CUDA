@@ -1,0 +1,14 @@
+# Simple P160 CUDA Hash Solver Makefile
+
+CC = nvcc
+CFLAGS = -O3 -std=c++14 -arch=sm_75 -Xptxas -O3 -Xcompiler -O3 -maxrregcount=64
+
+all: p160_simple
+
+p160_simple: p160_simple.cu
+	$(CC) $(CFLAGS) -o $@ $<
+
+clean:
+	rm -f p160_simple
+
+.PHONY: all clean
